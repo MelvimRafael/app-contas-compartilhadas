@@ -1,132 +1,185 @@
+import 'package:contas/screens/add_transaction_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 class TransactionsScreen extends StatefulWidget {
-  final String groupId; // ID do grupo para buscar transações
+  final String groupId;
+  final String groupName;
 
-  TransactionsScreen({required this.groupId});
+  TransactionsScreen({required this.groupId, required this.groupName});
 
   @override
   _TransactionsScreenState createState() => _TransactionsScreenState();
 }
 
-class _TransactionsScreenState extends State<TransactionsScreen> {
+class _TransactionsScreenState extends State<TransactionsScreen>
+    with SingleTickerProviderStateMixin {
   final _storage = FlutterSecureStorage();
   List<dynamic> _transactions = [];
-  final _descriptionController = TextEditingController();
-  final _valueController = TextEditingController();
+  List<dynamic> _members = [];
+  bool _isTransactionsLoading = true;
+  bool _isMembersLoading = true;
+  TabController? _tabController;
 
   @override
   void initState() {
     super.initState();
-    _loadTransactions(); // Carregar transações ao iniciar a tela
+    _tabController = TabController(length: 2, vsync: this);
+    _loadTransactions();
+    _loadMembers();
   }
 
   Future<void> _loadTransactions() async {
     final url =
-        'http://127.0.0.1:8000/api/transacoes?grupo_id=${widget.groupId}'; // URL para listar transações
+        'http://localhost:8000/api/transacoes/${widget.groupId}/';
 
     try {
+      final token = await _storage.read(key: 'token');
+      if (token == null) throw Exception('Token não encontrado.');
       final response = await http.get(
         Uri.parse(url),
-        headers: {
-          'Authorization': 'Token ${await _storage.read(key: 'token')}',
-        },
+        headers: {'Authorization': 'Token $token'},
       );
-
       if (response.statusCode == 200) {
         final data = json.decode(response.body) as List<dynamic>;
         setState(() {
-          _transactions = data; // Atualiza a lista de transações
+          _transactions = data;
+          _isTransactionsLoading = false;
         });
       } else {
         final errorMessage =
             json.decode(response.body)['error'] ?? 'Erro desconhecido';
         print('Erro ao carregar transações: $errorMessage');
+        setState(() => _isTransactionsLoading = false);
       }
     } catch (e) {
       print('Erro ao processar a resposta: $e');
+      setState(() => _isTransactionsLoading = false);
     }
   }
+Future<void> _loadMembers() async {
+  final url = 'http://localhost:8000/api/grupo/${widget.groupId}/membros';
+  try {
+    final token = await _storage.read(key: 'token');
+    if (token == null) throw Exception('Token não encontrado.');
+    final response = await http.get(
+      Uri.parse(url),
+      headers: {'Authorization': 'Token $token'},
+    );
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as List<dynamic>;
+      setState(() {
+        _members = data;
+        _isMembersLoading = false;
+      });
+      print('Membros carregados: $_members');
+    } else {
+      final errorMessage = json.decode(response.body)['error'] ?? 'Erro desconhecido';
+      print('Erro ao carregar membros: $errorMessage');
+      setState(() => _isMembersLoading = false);
+    }
+  } catch (e) {
+    print('Erro ao processar a resposta: $e');
+    setState(() => _isMembersLoading = false);
+  }
+}
 
-  Future<void> _addTransaction(String description, double value) async {
-    final url =
-        'http://127.0.0.1:8000/api/transacoes'; // URL para adicionar transações
+  Widget _buildMembersTab() {
+    return _isMembersLoading
+        ? Center(child: CircularProgressIndicator())
+        : ListView.builder(
+            itemCount: _members.length,
+            itemBuilder: (context, index) {
+              final member = _members[index];
+              return Card(
+                margin: EdgeInsets.symmetric(vertical: 8.0),
+                child: ListTile(
+                  title: Text(member['email'] ?? 'Email não disponível'),
+                ),
+              );
+            },
+          );
+  }
+
+  Future<void> _inviteMember(String email) async {
+    final url = 'http://localhost:8000/api/grupo/${widget.groupId}/convidar/';
 
     try {
+      final token = await _storage.read(key: 'token');
+      if (token == null) {
+        throw Exception('Token não encontrado.');
+      }
+
       final response = await http.post(
         Uri.parse(url),
         headers: {
+          'Authorization': 'Token $token',
           'Content-Type': 'application/json',
-          'Authorization': 'Token ${await _storage.read(key: 'token')}',
         },
-        body: jsonEncode({
-          'descricao': description,
-          'valor': value,
-          'grupo': widget.groupId, // ID do grupo ao qual a transação pertence
-        }),
+        body: json.encode({'email': email}),
       );
-
-      print('Response status: ${response.statusCode}');
-      print('Response body: ${response.body}');
 
       if (response.statusCode == 201) {
         final data = json.decode(response.body);
-        print('Transação criada: $data');
-        _loadTransactions(); // Atualiza a lista de transações após criação
+        print('Convite enviado: ${data}');
+        await _loadMembers(); // Atualize a lista de membros após enviar o convite
       } else {
-        final responseBody = json.decode(response.body);
-        final errorMessage = responseBody['error'] ?? 'Erro desconhecido';
-        print('Erro ao criar transação: $errorMessage');
+        final errorMessage =
+            json.decode(response.body)['error'] ?? 'Erro desconhecido';
+        print('Erro ao enviar convite: $errorMessage');
       }
     } catch (e) {
-      print('Erro ao processar a resposta: $e');
+      print('Erro ao processar o convite: $e');
     }
   }
 
-  void _showAddTransactionDialog() {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: Text('Adicionar Transação'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+  Widget _buildTransactionsTab() {
+    return _isTransactionsLoading
+        ? Center(child: CircularProgressIndicator())
+        : Column(
             children: [
-              TextField(
-                controller: _descriptionController,
-                decoration: InputDecoration(hintText: 'Descrição da Transação'),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _transactions.length,
+                  itemBuilder: (context, index) {
+                    final transaction = _transactions[index];
+                    return Card(
+                      margin: EdgeInsets.symmetric(vertical: 8.0),
+                      child: ListTile(
+                        title: Text(transaction['descricao'] ??
+                            'Descrição não disponível'),
+                        subtitle: Text(
+                          'Valor: ${transaction['valor']} - Tipo: ${transaction['tipo']} - Data: ${transaction['data_pagamento']}',
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
-              TextField(
-                controller: _valueController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(hintText: 'Valor da Transação'),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: ElevatedButton.icon(
+                  onPressed: _showAddTransactionModal,
+                  icon: Icon(Icons.add),
+                  label: Text('Adicionar Transação'),
+                ),
               ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                final description = _descriptionController.text;
-                final value = double.tryParse(_valueController.text) ?? 0.0;
-                if (description.isNotEmpty && value > 0) {
-                  _addTransaction(description, value);
-                }
-                _descriptionController.clear();
-                _valueController.clear();
-              },
-              child: Text('Adicionar'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-              child: Text('Cancelar'),
-            ),
-          ],
+          );
+  }
+
+  void _showAddTransactionModal() {
+    showModalBottomSheet(
+      context: context,
+      builder: (BuildContext context) {
+        return AddTransactionForm(
+          groupId: widget.groupId,
+          onTransactionAdded: () {
+            _loadTransactions(); // Atualize a lista de transações
+            Navigator.of(context).pop(); // Fecha o modal
+          },
         );
       },
     );
@@ -136,36 +189,68 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Transações do Grupo'),
+        title: Text(widget.groupName),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.person_add),
+            onPressed: () {
+              _showInviteDialog();
+            },
+          ),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: [
+            Tab(text: 'Transações'),
+            Tab(text: 'Participantes'),
+          ],
+        ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: _transactions.isEmpty
-            ? Center(child: Text('Nenhuma transação encontrada.'))
-            : ListView.builder(
-                itemCount: _transactions.length,
-                itemBuilder: (context, index) {
-                  final transaction = _transactions[index];
-                  return Card(
-                    margin: EdgeInsets.symmetric(vertical: 8.0),
-                    child: ListTile(
-                      title: Text(transaction['descricao'] ??
-                          'Descrição não encontrada'),
-                      subtitle: Text('Valor: R\$${transaction['valor']}'),
-                      trailing: Text(
-                        '${transaction['data']}',
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ),
-                  );
-                },
-              ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildTransactionsTab(),
+          _buildMembersTab(),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddTransactionDialog,
-        child: Icon(Icons.add),
-        tooltip: 'Adicionar Transação',
-      ),
+    );
+  }
+
+  void _showInviteDialog() {
+    final emailController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('Convidar Membro'),
+          content: TextField(
+            controller: emailController,
+            decoration: InputDecoration(
+              labelText: 'Email do membro',
+            ),
+            keyboardType: TextInputType.emailAddress,
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: Text('Cancelar'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: Text('Convidar'),
+              onPressed: () {
+                final email = emailController.text;
+                if (email.isNotEmpty) {
+                  _inviteMember(email);
+                  Navigator.of(context).pop();
+                }
+              },
+            ),
+          ],
+        );
+      },
     );
   }
 }
